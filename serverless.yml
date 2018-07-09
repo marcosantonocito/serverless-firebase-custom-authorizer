@@ -1,0 +1,44 @@
+service: clairy-hub
+
+##################
+## Provider
+##################
+
+provider:
+  name: aws
+  runtime: nodejs8.10
+  stage: dev
+  region: us-east-1
+
+  environment:
+    FIREBASE_DATABASE_URL:
+
+  package:
+    include:
+      - auth/**
+
+
+##################
+## Functions
+##################
+
+functions:
+  authorizer:
+    handler: auth/authorizer.handler
+
+  hello:
+    handler: handler.hello
+    events:
+      - http:
+          path: 'hello'
+          method: 'get'
+          authorizer:
+            name: authorizer
+
+
+##################
+## Plugins
+##################
+
+plugins:
+  - serverless-offline
