@@ -1,17 +1,20 @@
 const firebase = require('firebase-admin');
 const serviceAccount = require('./service-account-credentials.json');
 
+// every configuration is set in an env variable for security reasons https://firebase.google.com/docs/admin/setup
 const config = {
   credential: firebase.credential.cert(serviceAccount),
-  databaseURL: process.env.FIREBASE_DATABASE_URL
-}
+  databaseURL: process.env.FIREBASE_DATABASE_URL,
+};
 
 const app = !firebase.apps.length ? firebase.initializeApp(config) : firebase.app();
 
-// Policy helper function
+/**
+ * Function used to build the authorization response in the Lambda way
+ * attacching the necessary info (policy, statement, principalId)
+ */
 const generatePolicy = (principalId, effect, resource) => {
   const authResponse = {};
-  authResponse.principalId = principalId;
   if (effect && resource) {
     const policyDocument = {};
     policyDocument.Version = '2012-10-17';
@@ -23,16 +26,26 @@ const generatePolicy = (principalId, effect, resource) => {
     policyDocument.Statement[0] = statementOne;
     authResponse.policyDocument = policyDocument;
   }
+  if (principalId.devMessage) {
+    authResponse.context = principalId;
+  } else {
+    authResponse.principalId = principalId;
+  }
   return authResponse;
 };
 
-// Reusable Authorizer function, set on `authorizer` field in serverless.yml
+/**
+ * This lambda function is used as `authorizer`.
+ * It handles the authentication with firebase and its job is to authenticate each and every call.
+ * Set it in the 'authorize' field in serverless.yml
+ */
 module.exports.handler = (event, context, callback) => {
   console.log('event', event);
+  context.callbackWaitsForEmptyEventLoop = false;
 
   if (!event.authorizationToken) {
     // No authorization token
-    return callback('Unauthorized');
+    return callback('Missing authorization token.');
   }
 
   const tokenParts = event.authorizationToken.split(' ');
@@ -40,20 +53,18 @@ module.exports.handler = (event, context, callback) => {
 
   if (!(tokenParts[0].toLowerCase() === 'bearer' && tokenValue)) {
     // no auth token!
-    return callback('Unauthorized');
+    return callback('Malformed authorization token.');
   }
 
   try {
-    app.auth().verifyIdToken(tokenValue)
-      .then(function(decodedToken) {
-        return callback(null, generatePolicy(decodedToken.sub, 'Allow', event.methodArn));
-      }).catch(function(err) {
-        console.log('catch error. Invalid token', err);
-        return callback('Unauthorized');
-      });
+    // Verify the token and check if it's been revoked
+    const decodedToken = await app.auth().verifyIdToken(tokenValue, true);
 
+    // Sub is the firebase field containing the user/device id
+    const generatedPolicy = generatePolicy(decodedToken.sub, 'Allow', event.methodArn);
+    return callback(null, generatedPolicy);
   } catch (err) {
     console.log('catch error. Invalid token', err);
-    return callback('Unauthorized');
+    return callback('There are some issues with your auth token.');
   }
 };
